@@ -1,3 +1,4 @@
+#HEAD
 # 🛍️ Mi Tienda Bella — E-commerce MiPyme
 
 > Aplicación web de comercio electrónico completa para una MiPyme paraguaya especializada en artículos para mujeres.
@@ -221,6 +222,3 @@ FACTURACION_PUNTO_EXPEDICION_FISICO=002
 
 ---
 
-## 💖 Créditos
-
-Desarrollado con Antigravity — e-commerce de artículos femeninos para MiPymes paraguayas.
