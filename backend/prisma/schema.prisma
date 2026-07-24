@@ -1,0 +1,374 @@
+// ============================================================
+// schema.prisma — Definición completa de la base de datos
+// ============================================================
+// Este archivo le dice a Prisma (nuestro ORM) cómo crear
+// las tablas en PostgreSQL. Prisma lee este archivo y genera
+// las migraciones SQL automáticamente.
+//
+// ORM = Object-Relational Mapper: una herramienta que nos permite
+// trabajar con la base de datos usando código JavaScript, sin
+// escribir SQL directamente.
+// ============================================================
+
+// Configuración del generador: dice que queremos el cliente JS
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Configuración de la base de datos
+datasource db {
+  provider = "postgresql"
+  // La URL viene de la variable de entorno DATABASE_URL en .env
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// ENUMS — Son como listas de opciones fijas (no se pueden poner
+// valores fuera de los listados aquí)
+// ============================================================
+
+// Roles de usuario en el sistema
+enum Rol {
+  cliente
+  administrador
+  cajero
+}
+
+// Estado de un pedido a lo largo de su ciclo de vida
+enum EstadoPedido {
+  pendiente    // Creado pero no pagado aún
+  pagado       // Pago confirmado al contado
+  enviado      // El paquete ya fue despachado
+  entregado    // El cliente recibió el pedido
+  cancelado    // El pedido fue cancelado
+}
+
+// Tipo de venta: online (cliente compra por web) o presencial (cajero registra)
+enum TipoVenta {
+  online
+  presencial
+}
+
+// Métodos de pago aceptados (todos al contado, sin crédito)
+enum MetodoPago {
+  efectivo
+  transferencia
+  tarjeta
+}
+
+// Tasa de IVA según la legislación paraguaya
+enum TasaIva {
+  exenta  // 0% — productos de la canasta básica, etc.
+  cinco   // 5% — algunos productos específicos
+  diez    // 10% — la mayoría de productos
+}
+
+// Estado de la factura electrónica ante SIFEN
+enum EstadoFactura {
+  pendiente   // Aún no enviada al proveedor o esperando respuesta
+  aprobada    // SIFEN aprobó el documento
+  rechazada   // SIFEN rechazó el documento (hay errores)
+  anulada     // Fue anulada después de aprobada
+}
+
+// Tipo de documento electrónico
+enum TipoDocumento {
+  factura
+  nota_credito
+  nota_debito
+}
+
+// ============================================================
+// MODELOS — Cada modelo = una tabla en PostgreSQL
+// ============================================================
+
+// ------------------------------------------------------------
+// TABLA: usuarios
+// Almacena todos los usuarios del sistema: clientes, admin y cajeros.
+// ------------------------------------------------------------
+model Usuario {
+  id           String   @id @default(uuid())   // Identificador único (UUID en vez de número para mayor seguridad)
+  nombre       String   @db.VarChar(100)
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash")  // Contraseña cifrada con bcrypt (NUNCA texto plano)
+  rol          Rol      @default(cliente)       // Por defecto, todo nuevo registro es "cliente"
+  telefono     String?  @db.VarChar(20)        // El ? significa que es opcional
+  rucCi        String?  @map("ruc_ci") @db.VarChar(20)  // RUC o Cédula, necesario para facturas
+  razonSocial  String?  @map("razon_social") @db.VarChar(200)  // Nombre fiscal del cliente
+  activo       Boolean  @default(true)          // Permite desactivar usuarios sin borrarlos
+  creadoEn     DateTime @default(now()) @map("creado_en")
+  actualizadoEn DateTime @updatedAt @map("actualizado_en")
+
+  // Relaciones con otras tablas
+  direcciones    Direccion[]
+  carrito        Carrito?             // Un usuario tiene máximo 1 carrito
+  pedidos        Pedido[]             // Como cliente
+  ventasComoVendedor Pedido[]         @relation("VentasDelCajero")  // Como cajero
+  conversaciones ConversacionChatbot[]
+
+  @@map("usuarios")  // Nombre real de la tabla en la base de datos
+}
+
+// ------------------------------------------------------------
+// TABLA: categorias
+// Agrupa los productos: Ropa, Calzado, Accesorios, etc.
+// ------------------------------------------------------------
+model Categoria {
+  id          String    @id @default(uuid())
+  nombre      String    @unique @db.VarChar(100)
+  slug        String    @unique @db.VarChar(100)  // URL amigable, ej: "ropa-casual"
+  descripcion String?   @db.Text
+  imagenUrl   String?   @map("imagen_url")
+  activo      Boolean   @default(true)
+
+  productos   Producto[]
+
+  @@map("categorias")
+}
+
+// ------------------------------------------------------------
+// TABLA: productos
+// El catálogo principal de artículos de la tienda.
+// ------------------------------------------------------------
+model Producto {
+  id                 String    @id @default(uuid())
+  categoriaId        String    @map("categoria_id")
+  nombre             String    @db.VarChar(200)
+  descripcion        String?   @db.Text
+  precioBase         Decimal   @map("precio_base") @db.Decimal(10, 2)  // Precio principal en Guaraníes
+  precioConDescuento Decimal?  @map("precio_con_descuento") @db.Decimal(10, 2)  // NULL = sin descuento
+  codigoInterno      String?   @unique @map("codigo_interno") @db.VarChar(50)
+  unidadMedida       String    @default("unidad") @map("unidad_medida") @db.VarChar(20)  // Requerido por SIFEN: "unidad", "par", "kg"
+  tasaIva            TasaIva   @default(diez) @map("tasa_iva")  // IVA según categoría fiscal
+  activo             Boolean   @default(true)
+  destacado          Boolean   @default(false)  // Para mostrar en la página principal
+  creadoEn           DateTime  @default(now()) @map("creado_en")
+  actualizadoEn      DateTime  @updatedAt @map("actualizado_en")
+
+  // Relaciones
+  categoria    Categoria          @relation(fields: [categoriaId], references: [id])
+  imagenes     ImagenProducto[]
+  variantes    VarianteProducto[]
+
+  // Índices para acelerar las búsquedas más comunes
+  @@index([categoriaId])
+  @@index([activo])
+  @@index([destacado])
+  @@map("productos")
+}
+
+// ------------------------------------------------------------
+// TABLA: imagenes_producto
+// Cada producto puede tener múltiples fotos (almacenadas en Cloudinary).
+// ------------------------------------------------------------
+model ImagenProducto {
+  id          String   @id @default(uuid())
+  productoId  String   @map("producto_id")
+  url         String                          // URL pública de Cloudinary
+  publicId    String?  @map("public_id")      // ID en Cloudinary (para poder borrarla)
+  esPrincipal Boolean  @default(false) @map("es_principal")  // La imagen que se muestra en el catálogo
+  orden       Int      @default(0)            // Para ordenar las fotos en la galería
+
+  producto    Producto @relation(fields: [productoId], references: [id], onDelete: Cascade)
+
+  @@index([productoId])
+  @@map("imagenes_producto")
+}
+
+// ------------------------------------------------------------
+// TABLA: variantes_producto
+// Una variante es la combinación de talla + color de un producto.
+// Ej: Vestido Rojo → variante Talla M, Color Rojo, Stock 5
+// ------------------------------------------------------------
+model VarianteProducto {
+  id          String  @id @default(uuid())
+  productoId  String  @map("producto_id")
+  talla       String? @db.VarChar(20)        // S, M, L, XL, 38, 40...
+  color       String? @db.VarChar(50)
+  stock       Int     @default(0)            // Cantidad disponible. CHECK >= 0 en migración
+  precioExtra Decimal @default(0) @map("precio_extra") @db.Decimal(10, 2)  // Costo adicional sobre el precio base
+  sku         String? @unique @db.VarChar(100)  // Código único por variante (Stock Keeping Unit)
+
+  producto        Producto       @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  carritoItems    CarritoItem[]
+  detallesPedido  DetallePedido[]
+
+  @@index([productoId])
+  @@index([stock])
+  @@map("variantes_producto")
+}
+
+// ------------------------------------------------------------
+// TABLA: direcciones
+// Direcciones de entrega guardadas por el cliente.
+// ------------------------------------------------------------
+model Direccion {
+  id           String  @id @default(uuid())
+  usuarioId    String  @map("usuario_id")
+  alias        String? @db.VarChar(50)        // "Casa", "Trabajo", etc.
+  calle        String  @db.VarChar(200)
+  ciudad       String  @db.VarChar(100)
+  departamento String? @db.VarChar(100)
+  referencia   String? @db.Text               // Ej: "Casa azul frente a la farmacia"
+  esPrincipal  Boolean @default(false) @map("es_principal")
+
+  usuario  Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  pedidos  Pedido[]
+
+  @@index([usuarioId])
+  @@map("direcciones")
+}
+
+// ------------------------------------------------------------
+// TABLA: carritos
+// El carrito de compras. Cada usuario logueado tiene uno.
+// Los usuarios no logueados usan localStorage en el navegador.
+// ------------------------------------------------------------
+model Carrito {
+  id           String   @id @default(uuid())
+  usuarioId    String   @unique @map("usuario_id")  // UNIQUE: un carrito por usuario
+  actualizadoEn DateTime @updatedAt @map("actualizado_en")
+
+  usuario  Usuario       @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  items    CarritoItem[]
+
+  @@map("carritos")
+}
+
+// ------------------------------------------------------------
+// TABLA: carrito_items
+// Los productos dentro del carrito con su cantidad.
+// ------------------------------------------------------------
+model CarritoItem {
+  id          String   @id @default(uuid())
+  carritoId   String   @map("carrito_id")
+  varianteId  String   @map("variante_id")
+  cantidad    Int      // CHECK > 0 en la lógica del servicio
+  agregadoEn  DateTime @default(now()) @map("agregado_en")
+
+  carrito  Carrito          @relation(fields: [carritoId], references: [id], onDelete: Cascade)
+  variante VarianteProducto @relation(fields: [varianteId], references: [id])
+
+  // Un carrito no puede tener la misma variante dos veces (se actualiza la cantidad)
+  @@unique([carritoId, varianteId])
+  @@index([carritoId])
+  @@map("carrito_items")
+}
+
+// ------------------------------------------------------------
+// TABLA: pedidos
+// Un pedido es una compra confirmada. Estado "pagado" solo cuando
+// el monto fue cubierto totalmente (política de solo al contado).
+// ------------------------------------------------------------
+model Pedido {
+  id           String        @id @default(uuid())
+  usuarioId    String        @map("usuario_id")
+  cajeroId     String?       @map("cajero_id")        // Lleno solo en ventas presenciales
+  direccionId  String?       @map("direccion_id")     // NULL en ventas físicas
+  estado       EstadoPedido  @default(pendiente)
+  tipoVenta    TipoVenta     @map("tipo_venta")
+  metodoPago   MetodoPago    @map("metodo_pago")
+  subtotal     Decimal       @db.Decimal(10, 2)
+  descuentoTotal Decimal     @default(0) @map("descuento_total") @db.Decimal(10, 2)
+  total        Decimal       @db.Decimal(10, 2)
+  notas        String?       @db.Text
+  creadoEn     DateTime      @default(now()) @map("creado_en")
+  actualizadoEn DateTime     @updatedAt @map("actualizado_en")
+
+  // Relaciones
+  usuario   Usuario        @relation(fields: [usuarioId], references: [id])
+  cajero    Usuario?       @relation("VentasDelCajero", fields: [cajeroId], references: [id])
+  direccion Direccion?     @relation(fields: [direccionId], references: [id])
+  detalles  DetallePedido[]
+  factura   Factura?       // Un pedido tiene máximo una factura
+
+  @@index([usuarioId])
+  @@index([estado])
+  @@index([creadoEn])
+  @@map("pedidos")
+}
+
+// ------------------------------------------------------------
+// TABLA: detalle_pedido
+// Los ítems de cada pedido. Se guarda un "snapshot" (foto) del
+// nombre y precio al momento de la compra, por si el producto
+// cambia de precio después.
+// ------------------------------------------------------------
+model DetallePedido {
+  id              String  @id @default(uuid())
+  pedidoId        String  @map("pedido_id")
+  varianteId      String  @map("variante_id")
+  nombreProducto  String  @map("nombre_producto") @db.VarChar(200)  // Snapshot del nombre
+  talla           String? @db.VarChar(20)    // Snapshot de la talla
+  color           String? @db.VarChar(50)    // Snapshot del color
+  cantidad        Int
+  precioUnitario  Decimal @map("precio_unitario") @db.Decimal(10, 2)  // Snapshot del precio
+  subtotal        Decimal @db.Decimal(10, 2)
+
+  pedido   Pedido           @relation(fields: [pedidoId], references: [id], onDelete: Cascade)
+  variante VarianteProducto @relation(fields: [varianteId], references: [id])
+
+  @@index([pedidoId])
+  @@map("detalle_pedido")
+}
+
+// ------------------------------------------------------------
+// TABLA: facturas
+// Registro de cada documento electrónico emitido ante la DNIT.
+// CDC = Código de Control Digital, identificador único de cada factura en SIFEN.
+// KUDE = Kuaapy Documento Electrónico, el PDF con código QR que se entrega al cliente.
+// ------------------------------------------------------------
+model Factura {
+  id                 String         @id @default(uuid())
+  pedidoId           String         @unique @map("pedido_id")  // Un pedido = una factura
+  cdc                String?        @db.VarChar(44)  // 44 dígitos, asignado por SIFEN
+  estado             EstadoFactura  @default(pendiente)
+  tipoDocumento      TipoDocumento  @default(factura) @map("tipo_documento")
+  numeroFactura      String?        @map("numero_factura") @db.VarChar(50)  // Ej: 001-002-0000123
+  kudeUrl            String?        @map("kude_url")   // URL del PDF con QR
+  xmlUrl             String?        @map("xml_url")    // URL del XML original
+  respuestaProveedor Json?          @map("respuesta_proveedor")  // Respuesta cruda para auditoría
+  intentos           Int            @default(1)         // Contador de reintentos
+  proximoIntento     DateTime?      @map("proximo_intento")     // Para la cola de reintentos
+  fechaEmision       DateTime?      @map("fecha_emision")
+  creadoEn           DateTime       @default(now()) @map("creado_en")
+
+  pedido Pedido @relation(fields: [pedidoId], references: [id])
+
+  @@index([cdc])
+  @@index([estado])
+  @@map("facturas")
+}
+
+// ------------------------------------------------------------
+// TABLA: conversaciones_chatbot
+// Historial de preguntas y respuestas del chatbot.
+// Útil para ver qué preguntan los clientes y mejorar las respuestas.
+// ------------------------------------------------------------
+model ConversacionChatbot {
+  id         String   @id @default(uuid())
+  usuarioId  String?  @map("usuario_id")   // NULL si el visitante no está logueado
+  sesionId   String   @map("sesion_id") @db.VarChar(100)  // Para rastrear al visitante anónimo
+  mensaje    String   @db.Text
+  respuesta  String   @db.Text
+  tipo       String   @db.VarChar(10)  // "usuario" o "bot"
+  creadoEn   DateTime @default(now()) @map("creado_en")
+
+  usuario  Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([sesionId])
+  @@map("conversaciones_chatbot")
+}
+
+// ------------------------------------------------------------
+// TABLA: configuracion
+// Pares clave-valor para configurar el negocio desde el admin.
+// Ej: clave="whatsapp_numero", valor="+595981123456"
+// ------------------------------------------------------------
+model Configuracion {
+  id    String @id @default(uuid())
+  clave String @unique @db.VarChar(100)
+  valor String @db.Text
+
+  @@map("configuracion")
+}

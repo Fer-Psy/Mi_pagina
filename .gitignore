@@ -1,0 +1,30 @@
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+
+# Variables de entorno — NUNCA subir esto a GitHub
+.env
+.env.local
+.env.*.local
+
+# Prisma: el cliente generado se regenera con "npm run db:generate"
+node_modules/.prisma/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build
+dist/
+build/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
